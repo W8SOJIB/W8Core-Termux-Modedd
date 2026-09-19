@@ -13,16 +13,36 @@ done < <(env)
 
 ENV_ARGS+=(
 	"--env" "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
-	"--env" "TERM=$TERM"
+	"--env" "TERM=${TERM:-xterm-256color}"
 	"--env" "HOME=/root"
+	"--env" "TMPDIR=/tmp"
 )
+
+BIND_ARGS=()
+if [ -d "/sdcard" ]; then
+	BIND_ARGS+=("--bind" "/sdcard:/sdcard")
+fi
+if [ -d "/storage" ]; then
+	BIND_ARGS+=("--bind" "/storage:/storage")
+fi
+if [ -d "$HOME" ]; then
+	BIND_ARGS+=("--bind" "$HOME:$HOME")
+fi
+if [ -d "$HOME/.config/opencode" ]; then
+	BIND_ARGS+=("--bind" "$HOME/.config/opencode:/root/.config/opencode")
+fi
+
+TARGET_DIR="$PWD"
+if [ -z "$TARGET_DIR" ] || [ ! -d "$TARGET_DIR" ]; then
+	TARGET_DIR="/root"
+fi
 
 unset LD_PRELOAD
 proot-distro login \
 	"${ENV_ARGS[@]}" \
+	"${BIND_ARGS[@]}" \
 	--termux-home \
 	--shared-tmp \
-	--bind "$UBUNTU_ROOTFS/root/.opencode:/root/.opencode" \
-	--work-dir $PWD \
+	--work-dir "$TARGET_DIR" \
 	ubuntu \
 	-- /root/.opencode/bin/opencode "$@"

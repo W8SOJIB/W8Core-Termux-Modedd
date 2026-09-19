@@ -352,29 +352,18 @@ install_opencode() {
     rm -rf "$OPENCODE_DATA_DIR"
   fi
 
-  # Fast scan for existing Ubuntu container
-  local ubuntu_root
-  ubuntu_root="$(_opencode_detect_ubuntu_root)"
-
-  if [ -n "$ubuntu_root" ] && [ -d "$ubuntu_root" ]; then
-    log_success "Found existing Ubuntu container at: $ubuntu_root"
-    log_info "Auto-selecting Ubuntu container (skipping container re-download)"
-    _install_opencode_proot
-    return $?
-  fi
-
   log_info "Select installation method for OpenCode:"
 
   read_select "Installation method" SELECTED_METHOD \
-    "Native (recommended) - Compile with glibc support" \
+    "Native (recommended) - Direct glibc, fastest, zero lag, runs anywhere" \
     "Proot-distro (alternative) - Ubuntu container"
 
   case "$SELECTED_METHOD" in
-  *Native*)
-    _install_opencode_native
-    ;;
   *Proot-distro*)
     _install_opencode_proot
+    ;;
+  *Native*|*)
+    _install_opencode_native
     ;;
   esac
 }
