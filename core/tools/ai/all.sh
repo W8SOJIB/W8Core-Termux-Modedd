@@ -8,44 +8,50 @@ AI_TOOLS=(
   "claude-code"
   "opencode"
   "kilocode-cli"
+  "cline"
 )
 
 source "$(dirname "$BASH_SOURCE")/claude-code/install.sh"
 source "$(dirname "$BASH_SOURCE")/opencode/install.sh"
 source "$(dirname "$BASH_SOURCE")/kilocode-cli/install.sh"
+source "$(dirname "$BASH_SOURCE")/cline/install.sh"
 
 _install_ai_tool() {
   case "$1" in
-  claude-code) loading "Installing Claude Code" install_claude_code ;;
-  opencode) loading "Installing OpenCode" install_opencode ;;
-  kilocode-cli) loading "Installing Kilo Code CLI" install_kilocode_cli ;;
+  claude-code) install_claude_code ;;
+  opencode) install_opencode ;;
+  kilocode-cli) install_kilocode_cli ;;
+  cline) install_cline ;;
   *) log_warn "Unknown AI tool: --$1"; return 2 ;;
   esac
 }
 
 _uninstall_ai_tool() {
   case "$1" in
-  claude-code) loading "Uninstalling Claude Code" uninstall_claude_code ;;
-  opencode) loading "Uninstalling OpenCode" uninstall_opencode ;;
-  kilocode-cli) loading "Uninstalling Kilo Code CLI" uninstall_kilocode_cli ;;
+  claude-code) uninstall_claude_code ;;
+  opencode) uninstall_opencode ;;
+  kilocode-cli) uninstall_kilocode_cli ;;
+  cline) uninstall_cline ;;
   *) log_warn "Unknown AI tool: --$1"; return 2 ;;
   esac
 }
 
 _update_ai_tool() {
   case "$1" in
-  claude-code) loading "Updating Claude Code" update_claude_code ;;
-  opencode) loading "Updating OpenCode" update_opencode ;;
-  kilocode-cli) loading "Updating Kilo Code CLI" update_kilocode_cli ;;
+  claude-code) update_claude_code ;;
+  opencode) update_opencode ;;
+  kilocode-cli) update_kilocode_cli ;;
+  cline) update_cline ;;
   *) log_warn "Unknown AI tool: --$1"; return 2 ;;
   esac
 }
 
 _reinstall_ai_tool() {
   case "$1" in
-  claude-code) loading "Reinstalling Claude Code" reinstall_claude_code ;;
-  opencode) loading "Reinstalling OpenCode" reinstall_opencode ;;
-  kilocode-cli) loading "Reinstalling Kilo Code CLI" reinstall_kilocode_cli ;;
+  claude-code) reinstall_claude_code ;;
+  opencode) reinstall_opencode ;;
+  kilocode-cli) reinstall_kilocode_cli ;;
+  cline) reinstall_cline ;;
   *) log_warn "Unknown AI tool: --$1"; return 2 ;;
   esac
 }

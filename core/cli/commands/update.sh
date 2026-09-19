@@ -26,7 +26,7 @@ update_main() {
     echo
     log_info "Update specific tools with flags:"
     echo
-    list_item "core update ai --opencode --claude-code --kilocode-cli"
+    list_item "core update ai --opencode --claude-code --kilocode-cli --cline"
     list_item "core update db --postgresql --sqlite"
     list_item "Run ${D_CYAN}core list <target>${NC} to see all available tools"
     echo
@@ -134,6 +134,10 @@ _update_specific_tools() {
         ;;
       kilocode-cli)
         update_kilocode_cli
+        case $? in 0) ((updated_count++));; 1) ((failed_count++));; esac
+        ;;
+      cline)
+        update_cline
         case $? in 0) ((updated_count++));; 1) ((failed_count++));; esac
         ;;
       *)

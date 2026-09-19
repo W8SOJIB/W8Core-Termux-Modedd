@@ -7,16 +7,49 @@ LOG_FILE="$CORE_CACHE/install_ai.log"
 CLAUDE_DATA_DIR="$HOME/.local/share/core-termux-data/claude"
 
 _claude_detect_ubuntu_root() {
-  local root
-  root="$(find /data/data/com.termux -maxdepth 10 -type d \
-    -name "rootfs" -path "*/containers/ubuntu/*" 2>/dev/null | head -1)"
+  local candidates=(
+    "$PREFIX/var/lib/proot-distro/installed-rootfs/ubuntu"
+    "/data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/ubuntu"
+    "$PREFIX/var/lib/containers/ubuntu/rootfs"
+    "$PREFIX/var/lib/containers/ubuntu"
+    "$HOME/.local/share/proot-distro/installed-rootfs/ubuntu"
+    "$HOME/.local/share/containers/ubuntu/rootfs"
+  )
 
-  if [ -z "$root" ]; then
-    root="$(find /data/data/com.termux -maxdepth 10 -type d \
-      -name "ubuntu" -path "*/installed-rootfs/*" 2>/dev/null | head -1)"
+  local path
+  for path in "${candidates[@]}"; do
+    if [ -d "$path" ] && [ -d "$path/bin" ]; then
+      echo "$path"
+      return 0
+    fi
+  done
+
+  if command -v proot-distro &>/dev/null; then
+    if proot-distro list 2>/dev/null | grep -Eiq 'ubuntu.*\(installed\)|\* ubuntu|alias: ubuntu'; then
+      local pd_root="$PREFIX/var/lib/proot-distro/installed-rootfs/ubuntu"
+      if [ -d "$pd_root" ]; then
+        echo "$pd_root"
+        return 0
+      fi
+    fi
   fi
 
-  echo "$root"
+  local root
+  if [ -d "$PREFIX/var/lib" ]; then
+    root="$(find "$PREFIX/var/lib" -maxdepth 4 -type d \( -name "ubuntu" -o -name "rootfs" \) 2>/dev/null | grep -E 'ubuntu.*rootfs|installed-rootfs/ubuntu' | head -1)"
+    if [ -n "$root" ] && [ -d "$root" ] && [ -d "$root/bin" ]; then
+      echo "$root"
+      return 0
+    fi
+  fi
+
+  root="$(find /data/data/com.termux/files -maxdepth 5 -type d -path "*/installed-rootfs/ubuntu" 2>/dev/null | head -1)"
+  if [ -n "$root" ] && [ -d "$root" ]; then
+    echo "$root"
+    return 0
+  fi
+
+  return 1
 }
 
 _claude_proot_ubuntu() {
@@ -27,14 +60,28 @@ _claude_proot_ubuntu() {
 }
 
 _get_latest_claude_version() {
-  local version
-  version=$(curl -fsSL https://github.com/anthropics/claude-code/releases 2>/dev/null |
-    grep -o '/releases/tag/v[0-9][^"]*' | head -n 1 | cut -d/ -f4)
-  
+  local version=""
+
+  # Method 1: Follow HTTP redirect on /releases/latest
+  version=$(curl -sI --connect-timeout 6 -H "User-Agent: W8Core-Termux" https://github.com/anthropics/claude-code/releases/latest 2>/dev/null |
+    grep -i '^location:' | sed -E 's/.*tag\/(.*)/\1/' | tr -d '\r\n ')
+
+  # Method 2: GitHub API with User-Agent
   if [ -z "$version" ]; then
-    version=$(curl -fsSL https://api.github.com/repos/anthropics/claude-code/releases/latest 2>/dev/null |
-      grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    local api_args=(-H "User-Agent: W8Core-Termux")
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+      api_args+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+    fi
+    version=$(curl -fsSL --connect-timeout 10 "${api_args[@]}" https://api.github.com/repos/anthropics/claude-code/releases/latest 2>/dev/null |
+      grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' | tr -d '\r\n ')
   fi
+
+  # Method 3: Releases page HTML
+  if [ -z "$version" ]; then
+    version=$(curl -fsSL --connect-timeout 10 -H "User-Agent: W8Core-Termux" https://github.com/anthropics/claude-code/releases 2>/dev/null |
+      grep -o '/releases/tag/v[0-9][^"'\'' ]*' | head -n 1 | cut -d/ -f4 | tr -d '\r\n ')
+  fi
+
   echo "$version"
 }
 
@@ -43,6 +90,8 @@ _claude_install_deps_native() {
 }
 
 _claude_install_deps_native_impl() {
+  mkdir -p "$(dirname "$LOG_FILE")"
+
   if [[ ! -f $PREFIX/etc/apt/sources.list.d/glibc.list ]]; then
     if ! yes | pkg install glibc-repo &>>"$LOG_FILE"; then
       log_error "Failed to install glibc-repo"
@@ -55,6 +104,10 @@ _claude_install_deps_native_impl() {
       log_error "Failed to install glibc"
       return 1
     fi
+  fi
+
+  if [[ ! -f $PREFIX/etc/tls/cert.pem ]]; then
+    yes | pkg install ca-certificates &>>"$LOG_FILE" || true
   fi
 
   declare -A DEPS=(
@@ -79,29 +132,58 @@ _claude_install_deps_native_impl() {
 }
 
 _download_claude_binary() {
-  loading "Downloading Claude Code" _download_claude_binary_impl
+  loading "Downloading Claude Code (latest)" _download_claude_binary_impl
 }
 
 _download_claude_binary_impl() {
+  mkdir -p "$CLAUDE_DATA_DIR"
+  mkdir -p "$(dirname "$LOG_FILE")"
+
+  local arch
+  case "$(uname -m)" in
+    aarch64|arm64) arch="arm64" ;;
+    x86_64|amd64) arch="x64" ;;
+    *) arch="arm64" ;;
+  esac
+
+  local tarball="claude-linux-$arch.tar.gz"
   local latest_version
   latest_version=$(_get_latest_claude_version)
-  if [ -z "$latest_version" ]; then
-    log_error "Failed to fetch latest Claude Code version"
-    return 1
+
+  local urls=()
+  if [ -n "$latest_version" ]; then
+    urls+=("https://github.com/anthropics/claude-code/releases/download/$latest_version/$tarball")
   fi
+  urls+=("https://github.com/anthropics/claude-code/releases/latest/download/$tarball")
 
-  mkdir -p "$CLAUDE_DATA_DIR"
+  rm -f "$CLAUDE_DATA_DIR/$tarball"
 
-  local tarball="claude-linux-arm64.tar.gz"
-  local download_url="https://github.com/anthropics/claude-code/releases/download/$latest_version/$tarball"
+  local downloaded=false
+  local url
+  for url in "${urls[@]}"; do
+    if curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 -H "User-Agent: W8Core-Termux" "$url" -o "$CLAUDE_DATA_DIR/$tarball" &>>"$LOG_FILE"; then
+      if [ -s "$CLAUDE_DATA_DIR/$tarball" ] && tar -ztf "$CLAUDE_DATA_DIR/$tarball" &>/dev/null; then
+        downloaded=true
+        break
+      fi
+    fi
+    if curl -fLk --retry 2 --retry-delay 2 --connect-timeout 20 -H "User-Agent: W8Core-Termux" "$url" -o "$CLAUDE_DATA_DIR/$tarball" &>>"$LOG_FILE"; then
+      if [ -s "$CLAUDE_DATA_DIR/$tarball" ] && tar -ztf "$CLAUDE_DATA_DIR/$tarball" &>/dev/null; then
+        downloaded=true
+        break
+      fi
+    fi
+  done
 
-  if ! curl -fsSL "$download_url" -o "$CLAUDE_DATA_DIR/$tarball" &>>"$LOG_FILE"; then
+  if [ "$downloaded" != "true" ] || [ ! -s "$CLAUDE_DATA_DIR/$tarball" ]; then
     log_error "Failed to download Claude Code binary"
+    rm -f "$CLAUDE_DATA_DIR/$tarball"
     return 1
   fi
 
   if ! tar -zxf "$CLAUDE_DATA_DIR/$tarball" -C "$CLAUDE_DATA_DIR" &>>"$LOG_FILE"; then
     log_error "Failed to extract Claude Code binary"
+    rm -f "$CLAUDE_DATA_DIR/$tarball"
     return 1
   fi
 
@@ -158,8 +240,22 @@ _install_claude_proot_impl() {
     yes | pkg install proot-distro &>>"$LOG_FILE"
   fi
 
-  if [ ! -d "$(_claude_detect_ubuntu_root)" ]; then
-    proot-distro install ubuntu &>>"$LOG_FILE"
+  local ubuntu_root
+  ubuntu_root="$(_claude_detect_ubuntu_root)"
+
+  if [ -n "$ubuntu_root" ] && [ -d "$ubuntu_root" ]; then
+    log_info "Existing Ubuntu container detected at $ubuntu_root (skipping container download)"
+  else
+    if ! proot-distro list 2>/dev/null | grep -Eiq 'ubuntu.*\(installed\)|\* ubuntu'; then
+      log_info "Downloading and installing Ubuntu container via proot-distro..."
+      proot-distro install ubuntu &>>"$LOG_FILE"
+    fi
+    ubuntu_root="$(_claude_detect_ubuntu_root)"
+  fi
+
+  if [ -z "$ubuntu_root" ] || [ ! -d "$ubuntu_root" ]; then
+    log_error "Ubuntu rootfs not found"
+    return 1
   fi
 
   _claude_proot_ubuntu /bin/bash -c \
@@ -172,14 +268,6 @@ _install_claude_proot_impl() {
 		export HOME=/root
 		curl -fsSL https://claude.ai/install.sh | bash
 	' &>>"$LOG_FILE"
-
-  local ubuntu_root
-  ubuntu_root="$(_claude_detect_ubuntu_root)"
-
-  if [ -z "$ubuntu_root" ]; then
-    log_error "Ubuntu rootfs not found"
-    return 1
-  fi
 
   if ! _claude_proot_ubuntu test -x /root/.local/bin/claude &>>"$LOG_FILE"; then
     log_error "Claude Code binary not found after install"
@@ -206,6 +294,17 @@ install_claude_code() {
     log_warn "Existing Claude Code install detected; reinstalling"
     rm -f "$PREFIX/bin/claude"
     rm -rf "$CLAUDE_DATA_DIR"
+  fi
+
+  # Fast scan for existing Ubuntu container
+  local ubuntu_root
+  ubuntu_root="$(_claude_detect_ubuntu_root)"
+
+  if [ -n "$ubuntu_root" ] && [ -d "$ubuntu_root" ]; then
+    log_success "Found existing Ubuntu container at: $ubuntu_root"
+    log_info "Auto-selecting Ubuntu container (skipping container re-download)"
+    _install_claude_proot
+    return $?
   fi
 
   log_info "Select installation method for Claude Code:"

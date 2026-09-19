@@ -16,7 +16,7 @@ install_main() {
     echo
     list_item "lang       - Language packages (Node.js, Python, Perl, PHP, Rust, C, C++, Go)"
     list_item "db         - Databases (PostgreSQL, MariaDB, SQLite, MongoDB)"
-    list_item "ai         - AI tools (Claude Code, OpenCode, Kilo Code CLI)"
+    list_item "ai         - AI tools (Claude Code, OpenCode, Kilo Code CLI, Cline)"
     list_item "editor     - Code editor (Neovim + NvChad)"
     list_item "dev        - Development tools"
     list_item "npm        - Node.js global modules (npm packages)"
@@ -28,7 +28,7 @@ install_main() {
     log_info "Install specific tools with flags:"
     echo
     list_item "core install ai"
-    list_item "core install ai --opencode --claude-code --kilocode-cli"
+    list_item "core install ai --opencode --claude-code --kilocode-cli --cline"
     list_item "core install db --postgresql --sqlite"
     list_item "core install dev --gh --fzf --jq"
     list_item "Run ${D_CYAN}core list <target>${NC} to see all available tools"
@@ -138,6 +138,10 @@ _install_specific_tools() {
         ;;
       kilocode-cli)
         install_kilocode_cli
+        case $? in 0) ((installed_count++));; 1) ((failed_count++));; esac
+        ;;
+      cline)
+        install_cline
         case $? in 0) ((installed_count++));; 1) ((failed_count++));; esac
         ;;
       *)

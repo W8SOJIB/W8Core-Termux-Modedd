@@ -26,7 +26,7 @@ reinstall_main() {
     echo
     log_info "Reinstall specific tools with flags:"
     echo
-    list_item "core reinstall ai --opencode --claude-code --kilocode-cli"
+    list_item "core reinstall ai --opencode --claude-code --kilocode-cli --cline"
     list_item "core reinstall db --postgresql --sqlite"
     list_item "Run ${D_CYAN}core list <target>${NC} to see all available tools"
     echo
@@ -130,6 +130,10 @@ _reinstall_specific_tools() {
         ;;
       kilocode-cli)
         reinstall_kilocode_cli
+        case $? in 0) ((reinstalled_count++));; 1) ((failed_count++));; esac
+        ;;
+      cline)
+        reinstall_cline
         case $? in 0) ((reinstalled_count++));; 1) ((failed_count++));; esac
         ;;
       *)

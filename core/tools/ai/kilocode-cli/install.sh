@@ -7,16 +7,49 @@ LOG_FILE="$CORE_CACHE/install_ai.log"
 KILOCODE_DATA_DIR="$HOME/.local/share/core-termux-data/kilocode"
 
 _kilocode_detect_ubuntu_root() {
-  local root
-  root="$(find /data/data/com.termux -maxdepth 10 -type d \
-    -name "rootfs" -path "*/containers/ubuntu/*" 2>/dev/null | head -1)"
+  local candidates=(
+    "$PREFIX/var/lib/proot-distro/installed-rootfs/ubuntu"
+    "/data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/ubuntu"
+    "$PREFIX/var/lib/containers/ubuntu/rootfs"
+    "$PREFIX/var/lib/containers/ubuntu"
+    "$HOME/.local/share/proot-distro/installed-rootfs/ubuntu"
+    "$HOME/.local/share/containers/ubuntu/rootfs"
+  )
 
-  if [ -z "$root" ]; then
-    root="$(find /data/data/com.termux -maxdepth 10 -type d \
-      -name "ubuntu" -path "*/installed-rootfs/*" 2>/dev/null | head -1)"
+  local path
+  for path in "${candidates[@]}"; do
+    if [ -d "$path" ] && [ -d "$path/bin" ]; then
+      echo "$path"
+      return 0
+    fi
+  done
+
+  if command -v proot-distro &>/dev/null; then
+    if proot-distro list 2>/dev/null | grep -Eiq 'ubuntu.*\(installed\)|\* ubuntu|alias: ubuntu'; then
+      local pd_root="$PREFIX/var/lib/proot-distro/installed-rootfs/ubuntu"
+      if [ -d "$pd_root" ]; then
+        echo "$pd_root"
+        return 0
+      fi
+    fi
   fi
 
-  echo "$root"
+  local root
+  if [ -d "$PREFIX/var/lib" ]; then
+    root="$(find "$PREFIX/var/lib" -maxdepth 4 -type d \( -name "ubuntu" -o -name "rootfs" \) 2>/dev/null | grep -E 'ubuntu.*rootfs|installed-rootfs/ubuntu' | head -1)"
+    if [ -n "$root" ] && [ -d "$root" ] && [ -d "$root/bin" ]; then
+      echo "$root"
+      return 0
+    fi
+  fi
+
+  root="$(find /data/data/com.termux/files -maxdepth 5 -type d -path "*/installed-rootfs/ubuntu" 2>/dev/null | head -1)"
+  if [ -n "$root" ] && [ -d "$root" ]; then
+    echo "$root"
+    return 0
+  fi
+
+  return 1
 }
 
 _kilocode_proot_ubuntu() {
@@ -27,14 +60,28 @@ _kilocode_proot_ubuntu() {
 }
 
 _get_latest_kilocode_version() {
-  local version
-  version=$(curl -fsSL https://github.com/Kilo-Org/kilocode/releases 2>/dev/null |
-    grep -o '/releases/tag/v[0-9][^"]*' | head -n 1 | cut -d/ -f4)
-  
+  local version=""
+
+  # Method 1: Follow HTTP redirect on /releases/latest
+  version=$(curl -sI --connect-timeout 6 -H "User-Agent: W8Core-Termux" https://github.com/Kilo-Org/kilocode/releases/latest 2>/dev/null |
+    grep -i '^location:' | sed -E 's/.*tag\/(.*)/\1/' | tr -d '\r\n ')
+
+  # Method 2: GitHub API with User-Agent
   if [ -z "$version" ]; then
-    version=$(curl -fsSL https://api.github.com/repos/Kilo-Org/kilocode/releases 2>/dev/null |
-      grep '"tag_name":' | grep -v 'jetbrains' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/')
+    local api_args=(-H "User-Agent: W8Core-Termux")
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+      api_args+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+    fi
+    version=$(curl -fsSL --connect-timeout 10 "${api_args[@]}" https://api.github.com/repos/Kilo-Org/kilocode/releases 2>/dev/null |
+      grep '"tag_name":' | grep -v 'jetbrains' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' | tr -d '\r\n ')
   fi
+
+  # Method 3: Releases page HTML
+  if [ -z "$version" ]; then
+    version=$(curl -fsSL --connect-timeout 10 -H "User-Agent: W8Core-Termux" https://github.com/Kilo-Org/kilocode/releases 2>/dev/null |
+      grep -o '/releases/tag/v[0-9][^"'\'' ]*' | head -n 1 | cut -d/ -f4 | tr -d '\r\n ')
+  fi
+
   echo "$version"
 }
 
@@ -43,6 +90,8 @@ _kilocode_install_deps_native() {
 }
 
 _kilocode_install_deps_native_impl() {
+  mkdir -p "$(dirname "$LOG_FILE")"
+
   if [[ ! -f $PREFIX/etc/apt/sources.list.d/glibc.list ]]; then
     if ! yes | pkg install glibc-repo &>>"$LOG_FILE"; then
       log_error "Failed to install glibc-repo"
@@ -55,6 +104,10 @@ _kilocode_install_deps_native_impl() {
       log_error "Failed to install glibc"
       return 1
     fi
+  fi
+
+  if [[ ! -f $PREFIX/etc/tls/cert.pem ]]; then
+    yes | pkg install ca-certificates &>>"$LOG_FILE" || true
   fi
 
   declare -A DEPS=(
@@ -83,29 +136,58 @@ _kilocode_install_deps_native_impl() {
 }
 
 _download_kilocode_binary() {
-  loading "Downloading Kilo Code CLI" _download_kilocode_binary_impl
+  loading "Downloading Kilo Code CLI (latest)" _download_kilocode_binary_impl
 }
 
 _download_kilocode_binary_impl() {
+  mkdir -p "$KILOCODE_DATA_DIR"
+  mkdir -p "$(dirname "$LOG_FILE")"
+
+  local arch
+  case "$(uname -m)" in
+    aarch64|arm64) arch="arm64" ;;
+    x86_64|amd64) arch="x64" ;;
+    *) arch="arm64" ;;
+  esac
+
+  local tarball="kilo-linux-$arch.tar.gz"
   local latest_version
   latest_version=$(_get_latest_kilocode_version)
-  if [ -z "$latest_version" ]; then
-    log_error "Failed to fetch latest Kilo Code CLI version"
-    return 1
+
+  local urls=()
+  if [ -n "$latest_version" ]; then
+    urls+=("https://github.com/Kilo-Org/kilocode/releases/download/$latest_version/$tarball")
   fi
+  urls+=("https://github.com/Kilo-Org/kilocode/releases/latest/download/$tarball")
 
-  mkdir -p "$KILOCODE_DATA_DIR"
+  rm -f "$KILOCODE_DATA_DIR/$tarball"
 
-  local tarball="kilo-linux-arm64.tar.gz"
-  local download_url="https://github.com/Kilo-Org/kilocode/releases/download/$latest_version/$tarball"
+  local downloaded=false
+  local url
+  for url in "${urls[@]}"; do
+    if curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 -H "User-Agent: W8Core-Termux" "$url" -o "$KILOCODE_DATA_DIR/$tarball" &>>"$LOG_FILE"; then
+      if [ -s "$KILOCODE_DATA_DIR/$tarball" ] && tar -ztf "$KILOCODE_DATA_DIR/$tarball" &>/dev/null; then
+        downloaded=true
+        break
+      fi
+    fi
+    if curl -fLk --retry 2 --retry-delay 2 --connect-timeout 20 -H "User-Agent: W8Core-Termux" "$url" -o "$KILOCODE_DATA_DIR/$tarball" &>>"$LOG_FILE"; then
+      if [ -s "$KILOCODE_DATA_DIR/$tarball" ] && tar -ztf "$KILOCODE_DATA_DIR/$tarball" &>/dev/null; then
+        downloaded=true
+        break
+      fi
+    fi
+  done
 
-  if ! curl -fsSL "$download_url" -o "$KILOCODE_DATA_DIR/$tarball" &>>"$LOG_FILE"; then
+  if [ "$downloaded" != "true" ] || [ ! -s "$KILOCODE_DATA_DIR/$tarball" ]; then
     log_error "Failed to download Kilo Code CLI binary"
+    rm -f "$KILOCODE_DATA_DIR/$tarball"
     return 1
   fi
 
   if ! tar -zxf "$KILOCODE_DATA_DIR/$tarball" -C "$KILOCODE_DATA_DIR" &>>"$LOG_FILE"; then
     log_error "Failed to extract Kilo Code CLI binary"
+    rm -f "$KILOCODE_DATA_DIR/$tarball"
     return 1
   fi
 
@@ -165,8 +247,22 @@ _install_kilocode_proot_impl() {
     yes | pkg install proot-distro &>>"$LOG_FILE"
   fi
 
-  if [ ! -d "$(_kilocode_detect_ubuntu_root)" ]; then
-    proot-distro install ubuntu:24.04 &>>"$LOG_FILE"
+  local ubuntu_root
+  ubuntu_root="$(_kilocode_detect_ubuntu_root)"
+
+  if [ -n "$ubuntu_root" ] && [ -d "$ubuntu_root" ]; then
+    log_info "Existing Ubuntu container detected at $ubuntu_root (skipping container download)"
+  else
+    if ! proot-distro list 2>/dev/null | grep -Eiq 'ubuntu.*\(installed\)|\* ubuntu'; then
+      log_info "Downloading and installing Ubuntu container via proot-distro..."
+      proot-distro install ubuntu &>>"$LOG_FILE"
+    fi
+    ubuntu_root="$(_kilocode_detect_ubuntu_root)"
+  fi
+
+  if [ -z "$ubuntu_root" ] || [ ! -d "$ubuntu_root" ]; then
+    log_error "Ubuntu rootfs not found"
+    return 1
   fi
 
   _kilocode_proot_ubuntu /bin/bash -c \
@@ -180,7 +276,14 @@ _install_kilocode_proot_impl() {
     return 1
   fi
 
-  local download_url="https://github.com/Kilo-Org/kilocode/releases/download/$latest_version/kilo-linux-arm64.tar.gz"
+  local arch
+  case "$(uname -m)" in
+    aarch64|arm64) arch="arm64" ;;
+    x86_64|amd64) arch="x64" ;;
+    *) arch="arm64" ;;
+  esac
+
+  local download_url="https://github.com/Kilo-Org/kilocode/releases/download/$latest_version/kilo-linux-$arch.tar.gz"
 
   _kilocode_proot_ubuntu /bin/bash -c "
     mkdir -p /tmp/kilocode-install &&
@@ -191,14 +294,6 @@ _install_kilocode_proot_impl() {
     chmod +x /usr/local/bin/kilo &&
     rm -rf /tmp/kilocode-install
   " &>>"$LOG_FILE"
-
-  local ubuntu_root
-  ubuntu_root="$(_kilocode_detect_ubuntu_root)"
-
-  if [ -z "$ubuntu_root" ]; then
-    log_error "Ubuntu rootfs not found"
-    return 1
-  fi
 
   local kilocode_bin="$ubuntu_root/usr/local/bin/kilo"
 
@@ -225,6 +320,17 @@ install_kilocode_cli() {
     log_warn "Existing Kilo Code CLI install detected; reinstalling"
     rm -f "$PREFIX/bin/kilocode" "$PREFIX/bin/kilo"
     rm -rf "$KILOCODE_DATA_DIR"
+  fi
+
+  # Fast scan for existing Ubuntu container
+  local ubuntu_root
+  ubuntu_root="$(_kilocode_detect_ubuntu_root)"
+
+  if [ -n "$ubuntu_root" ] && [ -d "$ubuntu_root" ]; then
+    log_success "Found existing Ubuntu container at: $ubuntu_root"
+    log_info "Auto-selecting Ubuntu container (skipping container re-download)"
+    _install_kilocode_proot
+    return $?
   fi
 
   log_info "Select installation method for Kilo Code CLI:"

@@ -17,6 +17,7 @@ show_main() {
 		list_item "core show ai --opencode"
 		list_item "core show ai --claude-code"
 		list_item "core show ai --kilocode-cli"
+		list_item "core show ai --cline"
 		list_item "core show db --postgresql"
 		list_item "core show dev --gh"
 		list_item "core show npm --typescript"

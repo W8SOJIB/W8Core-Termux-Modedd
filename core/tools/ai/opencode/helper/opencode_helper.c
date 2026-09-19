@@ -13,24 +13,41 @@ int main(int argc, char** argv) {
     // 2. Set dynamic Go resolver and SSL configurations for Termux environment
     setenv("GODEBUG", "netdns=cgo", 1);
     setenv("SSL_CERT_FILE", "/data/data/com.termux/files/usr/etc/tls/cert.pem", 1);
+    setenv("NODE_EXTRA_CA_CERTS", "/data/data/com.termux/files/usr/etc/tls/cert.pem", 1);
 
-    // 3. Resolve current executable directory
-    char exec_path[PATH_MAX];
-    ssize_t len = readlink("/proc/self/exe", exec_path, sizeof(exec_path) - 1);
-    if (len == -1) {
-        return 1;
-    }
-    exec_path[len] = '\0';
-    char* dir = dirname(exec_path);
+    // 3. Architecture-dependent glibc dynamic linker
+#if defined(__x86_64__)
+    char* loader = "/data/data/com.termux/files/usr/glibc/lib/ld-linux-x86-64.so.2";
+#elif defined(__aarch64__)
+    char* loader = "/data/data/com.termux/files/usr/glibc/lib/ld-linux-aarch64.so.1";
+#else
+    char* loader = "/data/data/com.termux/files/usr/glibc/lib/ld-linux-aarch64.so.1";
+#endif
 
     // 4. Construct paths for the glibc loader and the real binary
-    // In our deb structure, opencode.real is in /usr/share/opencode/
-    // This bootstrapper is usually in /usr/bin/
-    char* loader = "/data/data/com.termux/files/usr/glibc/lib/ld-linux-aarch64.so.1";
-    char real_bin[] = "/data/data/com.termux/files/home/.local/share/core-termux-data/opencode/opencode";
+    char* home = getenv("HOME");
+    char real_bin[PATH_MAX];
+    if (home && strlen(home) > 0) {
+        snprintf(real_bin, sizeof(real_bin), "%s/.local/share/core-termux-data/opencode/opencode", home);
+    } else {
+        snprintf(real_bin, sizeof(real_bin), "/data/data/com.termux/files/home/.local/share/core-termux-data/opencode/opencode");
+    }
     char lib_path[] = "/data/data/com.termux/files/usr/glibc/lib";
 
-    // 5. Construct argument array for execv
+    // 5. Validate binary and glibc loader existence
+    if (access(real_bin, F_OK) != 0) {
+        fprintf(stderr, "\033[0;31m✖ OpenCode binary not found at %s\033[0m\n", real_bin);
+        fprintf(stderr, "Please run: \033[0;36mcore reinstall ai --opencode\033[0m\n");
+        return 1;
+    }
+
+    if (access(loader, F_OK) != 0) {
+        fprintf(stderr, "\033[0;31m✖ glibc loader not found at %s\033[0m\n", loader);
+        fprintf(stderr, "Please install glibc: \033[0;36mpkg install glibc\033[0m\n");
+        return 1;
+    }
+
+    // 6. Construct argument array for execv
     // Format: [loader, --library-path, lib_path, real_bin, ...original_args]
     char** new_argv = malloc((argc + 4) * sizeof(char*));
     if (!new_argv) {
@@ -47,7 +64,7 @@ int main(int argc, char** argv) {
     }
     new_argv[argc + 3] = NULL;
 
-    // 6. Execute the glibc loader to run the real binary
+    // 7. Execute the glibc loader to run the real binary
     execv(loader, new_argv);
 
     // If execv returns, an error occurred

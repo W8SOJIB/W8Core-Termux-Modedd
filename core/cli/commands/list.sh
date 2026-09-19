@@ -120,10 +120,11 @@ _list_ai() {
   table_row "Claude Code" "--claude-code" "claude" "$(_check_cmd "claude")"
   table_row "OpenCode" "--opencode" "opencode" "$(_check_cmd "opencode")"
   table_row "Kilo Code CLI" "--kilocode-cli" "kilo" "$(_check_cmd "kilo")"
+  table_row "Cline" "--cline" "cline" "$(_check_cmd "cline")"
   table_end
 
   echo
-  log_info "Install specific: ${D_CYAN}core install ai --opencode --claude-code --kilocode-cli${NC}"
+  log_info "Install specific: ${D_CYAN}core install ai --opencode --claude-code --kilocode-cli --cline${NC}"
   log_info "Choose one: ${D_CYAN}core install ai${NC}"
   echo
 }

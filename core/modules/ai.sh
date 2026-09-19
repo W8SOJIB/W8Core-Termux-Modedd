@@ -18,7 +18,8 @@ install_ai() {
   read_select "AI tool" SELECTED_AI_TOOL \
     "OpenCode (recommended)" \
     "Claude Code" \
-    "Kilo Code CLI"
+    "Kilo Code CLI" \
+    "Cline"
 
   local install_rc=0
 
@@ -33,6 +34,10 @@ install_ai() {
     ;;
   *Kilo*)
     _install_selected_ai_tool "kilocode-cli"
+    install_rc=$?
+    ;;
+  *Cline*)
+    _install_selected_ai_tool "cline"
     install_rc=$?
     ;;
   esac
@@ -65,7 +70,7 @@ _install_ai_tools_wrapper() {
 }
 
 uninstall_ai() {
-  if ! command -v opencode &>/dev/null && ! command -v claude &>/dev/null && ! command -v kilo &>/dev/null; then
+  if ! command -v opencode &>/dev/null && ! command -v claude &>/dev/null && ! command -v kilo &>/dev/null && ! command -v cline &>/dev/null; then
     log_info "AI Tools are not installed"
     return 0
   fi
@@ -118,6 +123,7 @@ reinstall_ai() {
   list_item "Claude Code"
   list_item "OpenCode"
   list_item "Kilo Code CLI"
+  list_item "Cline"
   echo
 }
 

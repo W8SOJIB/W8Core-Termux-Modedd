@@ -16,6 +16,7 @@ voice_help() {
 	printf "    ${D_CYAN}%-16s${NC} %s\n" "opencode" "opencode run \"prompt\""
 	printf "    ${D_CYAN}%-16s${NC} %s\n" "claude-code" "claude -p \"prompt\""
 	printf "    ${D_CYAN}%-16s${NC} %s\n" "kilocode-cli" "kilo run \"prompt\""
+	printf "    ${D_CYAN}%-16s${NC} %s\n" "cline" "cline \"prompt\""
 	printf "    ${D_CYAN}%-16s${NC} %s\n" "text" "Print prompt to stdout"
 	echo
 	separator_section "Examples"
@@ -124,11 +125,14 @@ voice_main() {
 	kilocode-cli)
 		kilo run "$prompt"
 		;;
+	cline)
+		cline "$prompt"
+		;;
 	*)
 		log_error "Unknown agent: $agent"
 		echo
 		log_info "Supported agents:"
-		echo "  opencode, claude-code, kilocode-cli"
+		echo "  opencode, claude-code, kilocode-cli, cline"
 		separator
 		exit 1
 		;;

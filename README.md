@@ -116,12 +116,13 @@ The `ai` module installs recommended AI-powered coding agents. Run the module in
 
 ```bash
 core install ai                    # Choose an AI tool to install
-core install ai --opencode --claude-code --kilocode-cli
+core install ai --opencode --claude-code --kilocode-cli --cline
 ```
 
 | Agent | Flag | Description |
 |-------|------|-------------|
 | [**Claude Code**](https://github.com/W8SOJIB/W8Core-Termux-Modedd/tree/main/core/tools/ai/claude-code) | `--claude-code` | Anthropic's CLI tool with Claude AI |
+| [**Cline**](https://github.com/W8SOJIB/W8Core-Termux-Modedd/tree/main/core/tools/ai/cline) | `--cline` | Autonomous coding agent CLI (creating/editing files, running commands, browser) |
 | [**Kilo Code CLI**](https://github.com/W8SOJIB/W8Core-Termux-Modedd/tree/main/core/tools/ai/kilocode-cli) | `--kilocode-cli` | The open source coding agent for building with AI in VS Code, JetBrains, or the CLI |
 | [**OpenCode**](https://github.com/W8SOJIB/W8Core-Termux-Modedd/tree/main/core/tools/ai/opencode) | `--opencode` | Open-source agent that helps you write code in your terminal |
 

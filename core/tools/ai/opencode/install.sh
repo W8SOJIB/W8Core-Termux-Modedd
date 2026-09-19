@@ -7,16 +7,53 @@ LOG_FILE="$CORE_CACHE/install_ai.log"
 OPENCODE_DATA_DIR="$HOME/.local/share/core-termux-data/opencode"
 
 _opencode_detect_ubuntu_root() {
-  local root
-  root="$(find /data/data/com.termux -maxdepth 10 -type d \
-    -name "rootfs" -path "*/containers/ubuntu/*" 2>/dev/null | head -1)"
+  # 1. Fast direct path checks (0ms)
+  local candidates=(
+    "$PREFIX/var/lib/proot-distro/installed-rootfs/ubuntu"
+    "/data/data/com.termux/files/usr/var/lib/proot-distro/installed-rootfs/ubuntu"
+    "$PREFIX/var/lib/containers/ubuntu/rootfs"
+    "$PREFIX/var/lib/containers/ubuntu"
+    "$HOME/.local/share/proot-distro/installed-rootfs/ubuntu"
+    "$HOME/.local/share/containers/ubuntu/rootfs"
+  )
 
-  if [ -z "$root" ]; then
-    root="$(find /data/data/com.termux -maxdepth 10 -type d \
-      -name "ubuntu" -path "*/installed-rootfs/*" 2>/dev/null | head -1)"
+  local path
+  for path in "${candidates[@]}"; do
+    if [ -d "$path" ] && [ -d "$path/bin" ]; then
+      echo "$path"
+      return 0
+    fi
+  done
+
+  # 2. Check if proot-distro lists ubuntu as installed
+  if command -v proot-distro &>/dev/null; then
+    if proot-distro list 2>/dev/null | grep -Eiq 'ubuntu.*\(installed\)|\* ubuntu|alias: ubuntu'; then
+      local pd_root="$PREFIX/var/lib/proot-distro/installed-rootfs/ubuntu"
+      if [ -d "$pd_root" ]; then
+        echo "$pd_root"
+        return 0
+      fi
+    fi
   fi
 
-  echo "$root"
+  # 3. Scoped search (shallow search in $PREFIX/var/lib)
+  local root
+  if [ -d "$PREFIX/var/lib" ]; then
+    root="$(find "$PREFIX/var/lib" -maxdepth 4 -type d \( -name "ubuntu" -o -name "rootfs" \) 2>/dev/null | grep -E 'ubuntu.*rootfs|installed-rootfs/ubuntu' | head -1)"
+    if [ -n "$root" ] && [ -d "$root" ] && [ -d "$root/bin" ]; then
+      echo "$root"
+      return 0
+    fi
+  fi
+
+  # 4. Fallback search (scoped to /data/data/com.termux/files)
+  root="$(find /data/data/com.termux/files -maxdepth 5 -type d -path "*/installed-rootfs/ubuntu" 2>/dev/null | head -1)"
+  if [ -n "$root" ] && [ -d "$root" ]; then
+    echo "$root"
+    return 0
+  fi
+
+  return 1
 }
 
 _opencode_proot_ubuntu() {
@@ -26,19 +63,48 @@ _opencode_proot_ubuntu() {
     -- "$@"
 }
 
-_get_latest_opencode_version() {
-  local version
-  version=$(curl -fsSL https://github.com/anomalyco/opencode/releases 2>/dev/null |
-    grep -o '/releases/tag/v[0-9][^"]*' | head -n 1 | cut -d/ -f4)
-  
-  if [ -z "$version" ]; then
-    local api_args=()
-    if [ -n "${GITHUB_TOKEN:-}" ]; then
-      api_args=(-H "Authorization: Bearer $GITHUB_TOKEN")
+_cleanup_legacy_opencode_path() {
+  local rc
+  for rc in "$HOME/.bashrc" "$HOME/.bash_profile" "$HOME/.profile" "$HOME/.zshrc"; do
+    if [ -f "$rc" ]; then
+      sed -i '/\.opencode\/bin/d' "$rc" 2>/dev/null || true
     fi
-    version=$(curl -fsSL "${api_args[@]}" https://api.github.com/repos/anomalyco/opencode/releases/latest 2>/dev/null |
-      grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+  done
+  hash -d opencode 2>/dev/null || true
+  hash -r 2>/dev/null || true
+}
+
+_cleanup_legacy_opencode() {
+  # If ~/.opencode/bin/opencode exists and is not a symlink to our helper, remove the broken raw binary
+  if [ -f "$HOME/.opencode/bin/opencode" ] && [ ! -L "$HOME/.opencode/bin/opencode" ]; then
+    rm -f "$HOME/.opencode/bin/opencode"
   fi
+  _cleanup_legacy_opencode_path
+}
+
+_get_latest_opencode_version() {
+  local version=""
+
+  # Method 1: Follow HTTP redirect on /releases/latest (fastest & lightweight, avoids API rate limits)
+  version=$(curl -sI --connect-timeout 6 -H "User-Agent: W8Core-Termux" https://github.com/anomalyco/opencode/releases/latest 2>/dev/null |
+    grep -i '^location:' | sed -E 's/.*tag\/(.*)/\1/' | tr -d '\r\n ')
+
+  # Method 2: GitHub API with User-Agent header
+  if [ -z "$version" ]; then
+    local api_args=(-H "User-Agent: W8Core-Termux")
+    if [ -n "${GITHUB_TOKEN:-}" ]; then
+      api_args+=(-H "Authorization: Bearer $GITHUB_TOKEN")
+    fi
+    version=$(curl -fsSL --connect-timeout 10 "${api_args[@]}" https://api.github.com/repos/anomalyco/opencode/releases/latest 2>/dev/null |
+      grep '"tag_name":' | head -n 1 | sed -E 's/.*"([^"]+)".*/\1/' | tr -d '\r\n ')
+  fi
+
+  # Method 3: Scrape releases page HTML
+  if [ -z "$version" ]; then
+    version=$(curl -fsSL --connect-timeout 10 -H "User-Agent: W8Core-Termux" https://github.com/anomalyco/opencode/releases 2>/dev/null |
+      grep -o '/releases/tag/v[0-9][^"'\'' ]*' | head -n 1 | cut -d/ -f4 | tr -d '\r\n ')
+  fi
+
   echo "$version"
 }
 
@@ -47,6 +113,8 @@ _opencode_install_deps_native() {
 }
 
 _opencode_install_deps_native_impl() {
+  mkdir -p "$(dirname "$LOG_FILE")"
+
   if [[ ! -f $PREFIX/etc/apt/sources.list.d/glibc.list ]]; then
     if ! yes | pkg install glibc-repo &>>"$LOG_FILE"; then
       log_error "Failed to install glibc-repo"
@@ -57,6 +125,13 @@ _opencode_install_deps_native_impl() {
   if [[ ! -f $PREFIX/glibc/lib/libc.so.6 ]]; then
     if ! yes | pkg install glibc &>>"$LOG_FILE"; then
       log_error "Failed to install glibc"
+      return 1
+    fi
+  fi
+
+  if [[ ! -f $PREFIX/etc/tls/cert.pem ]]; then
+    if ! yes | pkg install ca-certificates &>>"$LOG_FILE"; then
+      log_error "Failed to install ca-certificates"
       return 1
     fi
   fi
@@ -91,28 +166,63 @@ _download_opencode_binary() {
 }
 
 _download_opencode_binary_impl() {
+  mkdir -p "$OPENCODE_DATA_DIR"
+  mkdir -p "$(dirname "$LOG_FILE")"
+
+  local arch
+  case "$(uname -m)" in
+    aarch64|arm64)
+      arch="arm64"
+      ;;
+    x86_64|amd64)
+      arch="x64"
+      ;;
+    *)
+      log_error "Unsupported architecture: $(uname -m). OpenCode requires 64-bit (arm64 or x64)."
+      return 1
+      ;;
+  esac
+
+  local tarball="opencode-linux-$arch.tar.gz"
   local latest_version
   latest_version=$(_get_latest_opencode_version)
 
-  mkdir -p "$OPENCODE_DATA_DIR"
-
-  local tarball="opencode-linux-arm64.tar.gz"
-  local download_url
-
+  local urls=()
   if [ -n "$latest_version" ]; then
-    download_url="https://github.com/anomalyco/opencode/releases/download/$latest_version/$tarball"
-  else
-    log_warn "Could not fetch latest OpenCode version; using GitHub latest download"
-    download_url="https://github.com/anomalyco/opencode/releases/latest/download/$tarball"
+    urls+=("https://github.com/anomalyco/opencode/releases/download/$latest_version/$tarball")
   fi
+  urls+=("https://github.com/anomalyco/opencode/releases/latest/download/$tarball")
 
-  if ! curl -fsSL "$download_url" -o "$OPENCODE_DATA_DIR/$tarball" &>>"$LOG_FILE"; then
+  rm -f "$OPENCODE_DATA_DIR/$tarball"
+
+  local downloaded=false
+  local url
+  for url in "${urls[@]}"; do
+    if curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 -H "User-Agent: W8Core-Termux" "$url" -o "$OPENCODE_DATA_DIR/$tarball" &>>"$LOG_FILE"; then
+      if [ -s "$OPENCODE_DATA_DIR/$tarball" ] && tar -ztf "$OPENCODE_DATA_DIR/$tarball" &>/dev/null; then
+        downloaded=true
+        break
+      fi
+    fi
+
+    # SSL / CA fallback
+    if curl -fLk --retry 2 --retry-delay 2 --connect-timeout 20 -H "User-Agent: W8Core-Termux" "$url" -o "$OPENCODE_DATA_DIR/$tarball" &>>"$LOG_FILE"; then
+      if [ -s "$OPENCODE_DATA_DIR/$tarball" ] && tar -ztf "$OPENCODE_DATA_DIR/$tarball" &>/dev/null; then
+        downloaded=true
+        break
+      fi
+    fi
+  done
+
+  if [ "$downloaded" != "true" ] || [ ! -s "$OPENCODE_DATA_DIR/$tarball" ]; then
     log_error "Failed to download OpenCode binary"
+    rm -f "$OPENCODE_DATA_DIR/$tarball"
     return 1
   fi
 
   if ! tar -zxf "$OPENCODE_DATA_DIR/$tarball" -C "$OPENCODE_DATA_DIR" &>>"$LOG_FILE"; then
     log_error "Failed to extract OpenCode binary"
+    rm -f "$OPENCODE_DATA_DIR/$tarball"
     return 1
   fi
 
@@ -144,6 +254,14 @@ _compile_opencode_helper_impl() {
   fi
 
   chmod +x "$PREFIX/bin/opencode"
+
+  # Link ~/.opencode/bin/opencode to $PREFIX/bin/opencode for active terminal sessions
+  mkdir -p "$HOME/.opencode/bin" 2>/dev/null || true
+  ln -sf "$PREFIX/bin/opencode" "$HOME/.opencode/bin/opencode" 2>/dev/null || true
+
+  # Clean up legacy PATH exports from shell config files
+  _cleanup_legacy_opencode_path
+
   return 0
 }
 
@@ -169,8 +287,22 @@ _install_opencode_proot_impl() {
     yes | pkg install proot-distro &>>"$LOG_FILE"
   fi
 
-  if [ ! -d "$(_opencode_detect_ubuntu_root)" ]; then
-    proot-distro install ubuntu:24.04 &>>"$LOG_FILE"
+  local ubuntu_root
+  ubuntu_root="$(_opencode_detect_ubuntu_root)"
+
+  if [ -n "$ubuntu_root" ] && [ -d "$ubuntu_root" ]; then
+    log_info "Existing Ubuntu container detected at $ubuntu_root (skipping container download)"
+  else
+    if ! proot-distro list 2>/dev/null | grep -Eiq 'ubuntu.*\(installed\)|\* ubuntu'; then
+      log_info "Downloading and installing Ubuntu container via proot-distro..."
+      proot-distro install ubuntu &>>"$LOG_FILE"
+    fi
+    ubuntu_root="$(_opencode_detect_ubuntu_root)"
+  fi
+
+  if [ -z "$ubuntu_root" ] || [ ! -d "$ubuntu_root" ]; then
+    log_error "Ubuntu rootfs not found"
+    return 1
   fi
 
   _opencode_proot_ubuntu /bin/bash -c \
@@ -183,14 +315,6 @@ _install_opencode_proot_impl() {
 		export HOME=/root
 		curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
 	' &>>"$LOG_FILE"
-
-  local ubuntu_root
-  ubuntu_root="$(_opencode_detect_ubuntu_root)"
-
-  if [ -z "$ubuntu_root" ]; then
-    log_error "Ubuntu rootfs not found"
-    return 1
-  fi
 
   local opencode_bin="$ubuntu_root/root/.opencode/bin/opencode"
 
@@ -211,14 +335,32 @@ _install_opencode_proot_impl() {
     printf '\n# opencode\nexport PATH=/root/.opencode/bin:$PATH\n' >>"$ubuntu_root/root/.bashrc"
   fi
 
+  # Forward ~/.opencode/bin/opencode to $PREFIX/bin/opencode for active terminal sessions
+  mkdir -p "$HOME/.opencode/bin" 2>/dev/null || true
+  ln -sf "$PREFIX/bin/opencode" "$HOME/.opencode/bin/opencode" 2>/dev/null || true
+  _cleanup_legacy_opencode_path
+
   return 0
 }
 
 install_opencode() {
+  _cleanup_legacy_opencode
+
   if command -v opencode &>/dev/null || [ -d "$OPENCODE_DATA_DIR" ]; then
     log_warn "Existing OpenCode install detected; reinstalling"
     rm -f "$PREFIX/bin/opencode"
     rm -rf "$OPENCODE_DATA_DIR"
+  fi
+
+  # Fast scan for existing Ubuntu container
+  local ubuntu_root
+  ubuntu_root="$(_opencode_detect_ubuntu_root)"
+
+  if [ -n "$ubuntu_root" ] && [ -d "$ubuntu_root" ]; then
+    log_success "Found existing Ubuntu container at: $ubuntu_root"
+    log_info "Auto-selecting Ubuntu container (skipping container re-download)"
+    _install_opencode_proot
+    return $?
   fi
 
   log_info "Select installation method for OpenCode:"
@@ -240,7 +382,7 @@ install_opencode() {
 uninstall_opencode() {
   mkdir -p "$(dirname "$LOG_FILE")"
 
-  if [ ! -f "$PREFIX/bin/opencode" ]; then
+  if [ ! -f "$PREFIX/bin/opencode" ] && [ ! -d "$OPENCODE_DATA_DIR" ] && [ ! -f "$HOME/.opencode/bin/opencode" ]; then
     log_warn "OpenCode is not installed"
     return 1
   fi
@@ -249,29 +391,23 @@ uninstall_opencode() {
 }
 
 _uninstall_opencode_impl() {
-  if [ -f "$OPENCODE_DATA_DIR/opencode" ]; then
-    rm -f "$PREFIX/bin/opencode"
-    rm -rf "$OPENCODE_DATA_DIR"
-    log_success "OpenCode (native) uninstalled"
-    return 0
+  rm -f "$PREFIX/bin/opencode"
+  rm -rf "$OPENCODE_DATA_DIR"
+  rm -rf "$HOME/.opencode/bin"
+  _cleanup_legacy_opencode_path
+
+  local ubuntu_root
+  ubuntu_root="$(_opencode_detect_ubuntu_root)"
+  if [ -n "$ubuntu_root" ] && [ -d "$ubuntu_root" ]; then
+    _opencode_proot_ubuntu /bin/bash -c 'rm -rf /root/.opencode' &>>"$LOG_FILE" || true
+    local ubuntu_bashrc="$ubuntu_root/root/.bashrc"
+    if [ -f "$ubuntu_bashrc" ]; then
+      sed -i '/# opencode/d; /export PATH=\/root\/.opencode\/bin/d' "$ubuntu_bashrc" 2>/dev/null || true
+    fi
   fi
 
-  _opencode_proot_ubuntu /bin/bash -c 'rm -rf /root/.opencode' &>>"$LOG_FILE"
-
-  local ubuntu_bashrc
-  ubuntu_bashrc="$(_opencode_detect_ubuntu_root)/root/.bashrc"
-
-  if [ -f "$ubuntu_bashrc" ]; then
-    sed -i '/# opencode/d; /export PATH=\/root\/.opencode\/bin/d' "$ubuntu_bashrc"
-  fi
-
-  if rm -f "$PREFIX/bin/opencode" &>>"$LOG_FILE"; then
-    log_success "OpenCode (proot-distro) uninstalled"
-    return 0
-  else
-    log_error "Failed to uninstall OpenCode"
-    return 1
-  fi
+  log_success "OpenCode uninstalled"
+  return 0
 }
 
 update_opencode() {
